@@ -1,0 +1,100 @@
+name: Deploy to K3s
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '🎯 Target Environment'
+        required: true
+        type: choice
+        options:
+          - testing
+          - qa
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+      
+      - name: 🔐 Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[format('KUBECONFIG_{0}', github.event.inputs.environment)] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+      
+      - name: ✅ Test Cluster Connection
+        run: |
+          echo "Testing connection to K3s cluster..."
+          kubectl cluster-info
+          kubectl get nodes
+          echo ""
+          echo "✅ Connection successful!"
+      
+      - name: 🚀 Deploy to Kubernetes
+        run: |
+          NAMESPACE=${{ github.event.inputs.environment }}
+          
+          echo "Deploying to namespace: $NAMESPACE"
+          echo "================================"
+          
+          kubectl apply -f k8s/service.yaml -n $NAMESPACE
+          kubectl apply -f k8s/deployment.yaml -n $NAMESPACE
+          
+          echo ""
+          echo "✅ Manifests applied successfully!"
+      
+      - name: ⏳ Wait for Rollout
+        run: |
+          NAMESPACE=${{ github.event.inputs.environment }}
+          
+          echo "Waiting for deployment to complete..."
+          kubectl rollout status deployment/nginx -n $NAMESPACE --timeout=3m
+          
+          echo "✅ Rollout completed!"
+      
+      - name: 📊 Deployment Status
+        run: |
+          NAMESPACE=${{ github.event.inputs.environment }}
+          
+          echo "**🌐 Service Info:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          kubectl get svc nginx -n $NAMESPACE >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** \`$NAMESPACE\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "**📦 Pods Status:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n $NAMESPACE -l app=nginx >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "**🔗 Access URL:**" >> $GITHUB_STEP_SUMMARY
+          echo "http://YOUR_VM_IP:30080" >> $GITHUB_STEP_SUMMARY
+      
+      - name: 🏥 Health Check
+        run: |
+          NAMESPACE=${{ github.event.inputs.environment }}
+          
+          echo "Running health check..."
+          kubectl get pods -n $NAMESPACE -l app=nginx
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app=nginx -n $NAMESPACE --timeout=2m
+          
+          echo "✅ All pods are healthy!"
